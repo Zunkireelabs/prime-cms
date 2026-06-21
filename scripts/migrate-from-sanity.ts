@@ -1,10 +1,14 @@
 /**
  * Migrate all data from Sanity CMS → PostgreSQL (zunkiree-cms)
  * Run with: npx tsx scripts/migrate-from-sanity.ts
- * Uses SSH tunnel: ssh -f -N -L 5433:127.0.0.1:5432 primeceramics@27.111.18.110
+ *
+ * Downloads all referenced image/PDF assets from Sanity's CDN into public/uploads/
+ * and stores relative /uploads/<file> paths in the DB so Sanity can be decommissioned.
  */
 
 import { PrismaClient } from "@prisma/client";
+import { writeFile, mkdir, access } from "fs/promises";
+import { join, extname } from "path";
 
 const PROJECT_ID = "3jv6o4t6";
 const DATASET = "production";
@@ -20,7 +24,43 @@ async function sanityQuery<T>(query: string): Promise<T[]> {
 
 const db = new PrismaClient();
 
-// ─── Counters ───────────────────────────────────────────────────────────────
+const UPLOADS_DIR = join(process.cwd(), "public", "uploads");
+
+// ─── Asset localizer ─────────────────────────────────────────────────────────
+
+// In-memory dedupe within a run
+const assetCache = new Map<string, string>();
+
+async function localizeAsset(cdnUrl: string | null | undefined): Promise<string | null> {
+  if (!cdnUrl) return null;
+  if (assetCache.has(cdnUrl)) return assetCache.get(cdnUrl)!;
+
+  // Derive a deterministic filename from the URL so re-runs skip already-downloaded files.
+  // Sanity image CDN URLs end with <hash>-<dims>.<ext>; file URLs end with <hash>.<ext>.
+  const urlPath = new URL(cdnUrl).pathname;
+  const rawName = urlPath.split("/").pop() ?? "asset";
+  // Prefix with "sanity-" to namespace away from in-app uploads.
+  const filename = `sanity-${rawName}`;
+  const localPath = `/uploads/${filename}`;
+  const diskPath = join(UPLOADS_DIR, filename);
+
+  try {
+    await access(diskPath); // already exists — skip download
+  } catch {
+    const res = await fetch(cdnUrl);
+    if (!res.ok) {
+      console.warn(`  ⚠ Failed to download asset: ${cdnUrl} (${res.status})`);
+      return null;
+    }
+    const buffer = Buffer.from(await res.arrayBuffer());
+    await writeFile(diskPath, buffer);
+  }
+
+  assetCache.set(cdnUrl, localPath);
+  return localPath;
+}
+
+// ─── Counters ────────────────────────────────────────────────────────────────
 
 let totalInserted = 0;
 let totalSkipped = 0;
@@ -29,7 +69,7 @@ function log(msg: string) {
   console.log(`  ${msg}`);
 }
 
-// ─── 1. TileCatalog ─────────────────────────────────────────────────────────
+// ─── 1. TileCatalog ──────────────────────────────────────────────────────────
 
 async function migrateCatalogs() {
   console.log("\n📦 Migrating catalogs...");
@@ -72,6 +112,10 @@ async function migrateCatalogs() {
       totalSkipped++;
       continue;
     }
+
+    const coverImage = await localizeAsset(row.image);
+    const catalogPdf = await localizeAsset(row.pdf);
+
     await db.tileCatalog.upsert({
       where: { catalogId: row.catalogId },
       update: {
@@ -82,8 +126,8 @@ async function migrateCatalogs() {
         count: row.count ?? null,
         types: row.types ?? null,
         description: row.description ?? null,
-        coverImage: row.image ?? null,
-        catalogPdf: row.pdf ?? null,
+        coverImage,
+        catalogPdf,
         featured: row.featured ?? false,
         sortOrder: row.sortOrder ?? 50,
       },
@@ -96,8 +140,8 @@ async function migrateCatalogs() {
         count: row.count ?? null,
         types: row.types ?? null,
         description: row.description ?? null,
-        coverImage: row.image ?? null,
-        catalogPdf: row.pdf ?? null,
+        coverImage,
+        catalogPdf,
         featured: row.featured ?? false,
         sortOrder: row.sortOrder ?? 50,
       },
@@ -107,19 +151,18 @@ async function migrateCatalogs() {
   }
 }
 
-// ─── 2. TileProduct + GalleryImage ──────────────────────────────────────────
+// ─── 2. TileProduct + GalleryImage ───────────────────────────────────────────
 
 async function migrateProducts() {
   console.log("\n🧱 Migrating products...");
 
-  // Build catalogId → DB id map
   const catalogs = await db.tileCatalog.findMany({ select: { id: true, catalogId: true } });
   const catalogMap = new Map(catalogs.map((c) => [c.catalogId, c.id]));
 
   const rows = await sanityQuery<{
     name: string;
     slug: string;
-    catalog: string; // catalogId string from GROQ
+    catalog: string;
     category: string;
     series: string;
     collection?: string;
@@ -180,7 +223,11 @@ async function migrateProducts() {
       continue;
     }
 
+    const image = await localizeAsset(row.image);
     const galleryItems = (row.gallery ?? []).filter((g) => g.url);
+    const galleryLocal = await Promise.all(
+      galleryItems.map(async (g) => ({ ...g, localUrl: await localizeAsset(g.url) }))
+    );
 
     const product = await db.tileProduct.upsert({
       where: { slug: row.slug },
@@ -197,7 +244,7 @@ async function migrateProducts() {
         spaces: row.spaces ?? [],
         hasMatchingFloor: row.hasMatchingFloor ?? null,
         variants: row.variants ?? [],
-        image: row.image ?? null,
+        image,
         imageAlt: row.imageAlt ?? null,
         imageRotation: row.imageRotation ?? 0,
         hasGallery: row.hasGallery ?? false,
@@ -219,7 +266,7 @@ async function migrateProducts() {
         spaces: row.spaces ?? [],
         hasMatchingFloor: row.hasMatchingFloor ?? null,
         variants: row.variants ?? [],
-        image: row.image ?? null,
+        image,
         imageAlt: row.imageAlt ?? null,
         imageRotation: row.imageRotation ?? 0,
         hasGallery: row.hasGallery ?? false,
@@ -229,26 +276,27 @@ async function migrateProducts() {
       },
     });
 
-    // Sync gallery images: delete existing, re-insert
-    if (galleryItems.length > 0) {
+    if (galleryLocal.length > 0) {
       await db.galleryImage.deleteMany({ where: { productId: product.id } });
       await db.galleryImage.createMany({
-        data: galleryItems.map((g, i) => ({
-          productId: product.id,
-          image: g.url!,
-          label: g.label ?? "mockup",
-          caption: g.caption ?? null,
-          sortOrder: i,
-        })),
+        data: galleryLocal
+          .filter((g) => g.localUrl)
+          .map((g, i) => ({
+            productId: product.id,
+            image: g.localUrl!,
+            label: g.label ?? "mockup",
+            caption: g.caption ?? null,
+            sortOrder: i,
+          })),
       });
     }
 
-    log(`✓ ${row.name} (${row.slug})${galleryItems.length > 0 ? ` +${galleryItems.length} gallery` : ""}`);
+    log(`✓ ${row.name} (${row.slug})`);
     totalInserted++;
   }
 }
 
-// ─── 3. HeroBanner ──────────────────────────────────────────────────────────
+// ─── 3. HeroBanner ───────────────────────────────────────────────────────────
 
 async function migrateHeroBanners() {
   console.log("\n🖼  Migrating hero banners...");
@@ -275,32 +323,27 @@ async function migrateHeroBanners() {
 
   log(`Fetched ${rows.length} hero banners from Sanity`);
 
-  // Clear and re-insert (no unique key other than title)
   await db.heroBanner.deleteMany();
 
   for (const row of rows) {
-    if (!row.image) {
-      log(`⚠ Skipping banner without image: ${row.title}`);
-      totalSkipped++;
-      continue;
-    }
+    const image = await localizeAsset(row.image);
     await db.heroBanner.create({
       data: {
         title: row.title,
         tagline: row.tagline ?? null,
-        image: row.image,
+        image,
         collection: row.collection ?? null,
         cta: row.cta ?? "Discover More",
         sortOrder: row.sortOrder ?? 100,
         active: row.active ?? true,
       },
     });
-    log(`✓ ${row.title}`);
+    log(`✓ ${row.title}${!image ? " (no image)" : ""}`);
     totalInserted++;
   }
 }
 
-// ─── 4. NewsArticle ─────────────────────────────────────────────────────────
+// ─── 4. NewsArticle ──────────────────────────────────────────────────────────
 
 async function migrateNews() {
   console.log("\n📰 Migrating news articles...");
@@ -334,6 +377,7 @@ async function migrateNews() {
   await db.newsArticle.deleteMany();
 
   for (const row of rows) {
+    const image = await localizeAsset(row.image);
     await db.newsArticle.create({
       data: {
         title: row.title,
@@ -341,7 +385,7 @@ async function migrateNews() {
         date: new Date(row.date),
         url: row.url,
         summary: row.summary,
-        image: row.image ?? null,
+        image,
         imageFit: row.imageFit ?? "cover",
         imagePosition: row.imagePosition ?? null,
         featured: row.featured ?? false,
@@ -352,7 +396,7 @@ async function migrateNews() {
   }
 }
 
-// ─── 5. Dealers ─────────────────────────────────────────────────────────────
+// ─── 5. Dealers ──────────────────────────────────────────────────────────────
 
 async function migrateDealers() {
   console.log("\n🏪 Migrating dealers...");
@@ -395,7 +439,7 @@ async function migrateDealers() {
   log(`✓ ${rows.length} dealers inserted`);
 }
 
-// ─── 6. JobOpenings ─────────────────────────────────────────────────────────
+// ─── 6. JobOpenings ──────────────────────────────────────────────────────────
 
 async function migrateJobs() {
   console.log("\n💼 Migrating job openings...");
@@ -441,7 +485,7 @@ async function migrateJobs() {
   }
 }
 
-// ─── 7. ProjectHighlights ───────────────────────────────────────────────────
+// ─── 7. ProjectHighlights ────────────────────────────────────────────────────
 
 async function migrateProjects() {
   console.log("\n🏗  Migrating project highlights...");
@@ -473,11 +517,7 @@ async function migrateProjects() {
   await db.projectHighlight.deleteMany();
 
   for (const row of rows) {
-    if (!row.image) {
-      log(`⚠ Skipping project without image: ${row.title}`);
-      totalSkipped++;
-      continue;
-    }
+    const image = await localizeAsset(row.image);
     await db.projectHighlight.create({
       data: {
         title: row.title,
@@ -486,16 +526,16 @@ async function migrateProjects() {
         tile: row.tile ?? null,
         size: row.size ?? null,
         area: row.area ?? null,
-        image: row.image,
+        image,
         sortOrder: row.sortOrder ?? 100,
       },
     });
-    log(`✓ ${row.title}`);
+    log(`✓ ${row.title}${!image ? " (no image)" : ""}`);
     totalInserted++;
   }
 }
 
-// ─── 8. Testimonials ────────────────────────────────────────────────────────
+// ─── 8. Testimonials ─────────────────────────────────────────────────────────
 
 async function migrateTestimonials() {
   console.log("\n💬 Migrating testimonials...");
@@ -521,13 +561,14 @@ async function migrateTestimonials() {
   await db.testimonial.deleteMany();
 
   for (const row of rows) {
+    const image = await localizeAsset(row.image);
     await db.testimonial.create({
       data: {
         quote: row.quote,
         author: row.author,
         role: row.role ?? null,
         project: row.project ?? null,
-        image: row.image ?? null,
+        image,
       },
     });
     log(`✓ ${row.author}`);
@@ -535,12 +576,11 @@ async function migrateTestimonials() {
   }
 }
 
-// ─── 9. RoomMockups ─────────────────────────────────────────────────────────
+// ─── 9. RoomMockups ──────────────────────────────────────────────────────────
 
 async function migrateRoomMockups() {
   console.log("\n🛋  Migrating room mockups...");
 
-  // Build slug → DB id map for products
   const products = await db.tileProduct.findMany({ select: { id: true, slug: true } });
   const productSlugMap = new Map(products.map((p) => [p.slug, p.id]));
 
@@ -553,7 +593,7 @@ async function migrateRoomMockups() {
     description?: string;
     sortOrder?: number;
     hidden?: boolean;
-    featuredProducts?: string[]; // slugs
+    featuredProducts?: string[];
   }>(`
     *[_type == "roomMockup"] | order(sortOrder asc) {
       title,
@@ -579,6 +619,13 @@ async function migrateRoomMockups() {
       continue;
     }
 
+    const image = await localizeAsset(row.image);
+    if (!image) {
+      log(`⚠ Skipping room mockup — failed to download image: ${row.title}`);
+      totalSkipped++;
+      continue;
+    }
+
     const productIds = (row.featuredProducts ?? [])
       .map((slug) => productSlugMap.get(slug))
       .filter(Boolean) as string[];
@@ -588,7 +635,7 @@ async function migrateRoomMockups() {
         title: row.title,
         slug: row.slug,
         roomType: row.roomType ?? null,
-        image: row.image,
+        image,
         imageAlt: row.imageAlt ?? null,
         description: row.description ?? null,
         sortOrder: row.sortOrder ?? 100,
@@ -603,12 +650,61 @@ async function migrateRoomMockups() {
   }
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+// ─── 10. ProjectTestimonials ─────────────────────────────────────────────────
+
+async function migrateProjectTestimonials() {
+  console.log("\n🏆 Migrating project testimonials...");
+
+  const rows = await sanityQuery<{
+    project: string;
+    location?: string;
+    type?: string;
+    tile?: string;
+    size?: string;
+    area?: string;
+    sortOrder?: number;
+  }>(`
+    *[_type == "projectTestimonial"] | order(sortOrder asc, project asc) {
+      project,
+      location,
+      type,
+      tile,
+      size,
+      area,
+      sortOrder
+    }
+  `);
+
+  log(`Fetched ${rows.length} project testimonials from Sanity`);
+
+  await db.projectTestimonial.deleteMany();
+
+  for (const row of rows) {
+    await db.projectTestimonial.create({
+      data: {
+        project: row.project,
+        location: row.location ?? null,
+        type: row.type ?? null,
+        tile: row.tile ?? null,
+        size: row.size ?? null,
+        area: row.area ?? null,
+        sortOrder: row.sortOrder ?? 100,
+      },
+    });
+    log(`✓ ${row.project}`);
+    totalInserted++;
+  }
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("🚀 Starting Sanity → PostgreSQL migration");
+  console.log("🚀 Starting Sanity → PostgreSQL migration (with asset localization)");
   console.log(`   Sanity project: ${PROJECT_ID} / ${DATASET}`);
   console.log(`   Database: ${process.env.DATABASE_URL?.split("@")[1] ?? "unknown"}`);
+  console.log(`   Assets: ${UPLOADS_DIR}`);
+
+  await mkdir(UPLOADS_DIR, { recursive: true });
 
   try {
     await migrateCatalogs();
@@ -620,10 +716,12 @@ async function main() {
     await migrateProjects();
     await migrateTestimonials();
     await migrateRoomMockups();
+    await migrateProjectTestimonials();
 
     console.log("\n✅ Migration complete!");
     console.log(`   Inserted/updated: ${totalInserted}`);
     console.log(`   Skipped:          ${totalSkipped}`);
+    console.log(`   Assets cached:    ${assetCache.size}`);
   } catch (err) {
     console.error("\n❌ Migration failed:", err);
     process.exit(1);

@@ -13,6 +13,7 @@ import {
   Home,
   MapPin,
   Briefcase,
+  Trophy,
 } from "lucide-react";
 
 const navItems = [
@@ -26,6 +27,7 @@ const navItems = [
   { label: "Room Mockups", href: "/admin/mockups", icon: Home },
   { label: "Dealers", href: "/admin/dealers", icon: MapPin },
   { label: "Jobs", href: "/admin/jobs", icon: Briefcase },
+  { label: "Project Refs", href: "/admin/project-testimonials", icon: Trophy },
 ];
 
 export default function Sidebar() {

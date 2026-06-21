@@ -80,7 +80,7 @@ model HeroBanner {
   id         String   @id @default(cuid())
   title      String
   tagline    String?
-  image      String
+  image      String?
   collection String?
   cta        String   @default("Discover More")
   sortOrder  Int      @default(100)
@@ -137,7 +137,7 @@ model ProjectHighlight {
   tile      String?
   size      String?
   area      String?
-  image     String
+  image     String?
   sortOrder Int      @default(100)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -167,4 +167,17 @@ model RoomMockup {
   featuredProducts TileProduct[] @relation("RoomMockupProducts")
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
+}
+
+model ProjectTestimonial {
+  id        String   @id @default(cuid())
+  project   String
+  location  String?
+  type      String?
+  tile      String?
+  size      String?
+  area      String?
+  sortOrder Int      @default(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

@@ -10,7 +10,8 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "db:seed": "tsx --env-file=.env prisma/seed.ts"
+    "db:seed": "tsx --env-file=.env prisma/seed.ts",
+    "db:verify": "tsx --env-file=.env scripts/verify-sanity-migration.ts"
   },
   "dependencies": {
     "next": "^15.3.3",
