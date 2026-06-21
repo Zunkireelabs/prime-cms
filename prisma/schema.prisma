@@ -1,0 +1,170 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-1.1.x", "debian-openssl-1.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  password  String
+  role      String   @default("editor")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TileCatalog {
+  id          String        @id @default(cuid())
+  name        String
+  slug        String        @unique
+  catalogId   String        @unique
+  size        String?
+  filterValue String?
+  count       String?
+  types       String?
+  description String?
+  coverImage  String?
+  catalogPdf  String?
+  featured    Boolean       @default(false)
+  sortOrder   Int           @default(50)
+  products    TileProduct[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model TileProduct {
+  id               String         @id @default(cuid())
+  name             String
+  slug             String         @unique
+  catalogId        String
+  catalog          TileCatalog    @relation(fields: [catalogId], references: [id])
+  category         String
+  series           String
+  collection       String?
+  size             String
+  finish           String
+  application      String
+  panelLayout      Json?
+  spaces           String[]
+  hasMatchingFloor String?
+  variants         String[]
+  image            String?
+  imageAlt         String?
+  imageRotation    Int            @default(0)
+  hasGallery       Boolean        @default(false)
+  gallery          GalleryImage[]
+  showFirst        String         @default("product")
+  sortOrder        Int            @default(100)
+  hidden           Boolean        @default(false)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  roomMockups      RoomMockup[]   @relation("RoomMockupProducts")
+}
+
+model GalleryImage {
+  id        String      @id @default(cuid())
+  productId String
+  product   TileProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  image     String
+  label     String      @default("mockup")
+  caption   String?
+  sortOrder Int         @default(0)
+}
+
+model HeroBanner {
+  id         String   @id @default(cuid())
+  title      String
+  tagline    String?
+  image      String
+  collection String?
+  cta        String   @default("Discover More")
+  sortOrder  Int      @default(100)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model NewsArticle {
+  id            String   @id @default(cuid())
+  title         String
+  source        String
+  date          DateTime
+  url           String
+  summary       String
+  image         String?
+  imageFit      String   @default("cover")
+  imagePosition String?
+  featured      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Dealer {
+  id            String   @id @default(cuid())
+  name          String
+  city          String
+  province      String
+  address       String?
+  phone         String?
+  contactPerson String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model JobOpening {
+  id        String   @id @default(cuid())
+  title     String
+  team      String
+  location  String
+  type      String
+  summary   String
+  applyUrl  String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ProjectHighlight {
+  id        String   @id @default(cuid())
+  title     String
+  location  String?
+  type      String?
+  tile      String?
+  size      String?
+  area      String?
+  image     String
+  sortOrder Int      @default(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Testimonial {
+  id        String   @id @default(cuid())
+  quote     String
+  author    String
+  role      String?
+  project   String?
+  image     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model RoomMockup {
+  id               String        @id @default(cuid())
+  title            String
+  slug             String        @unique
+  roomType         String?
+  image            String
+  imageAlt         String?
+  description      String?
+  sortOrder        Int           @default(100)
+  hidden           Boolean       @default(false)
+  featuredProducts TileProduct[] @relation("RoomMockupProducts")
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+}
