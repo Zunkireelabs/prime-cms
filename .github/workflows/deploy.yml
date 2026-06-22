@@ -7,8 +7,44 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Deploy via SSH
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Build
+        run: npm run build
+        env:
+          NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
+          NEXTAUTH_URL: ${{ secrets.NEXTAUTH_URL }}
+          CMS_API_KEY: ${{ secrets.CMS_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Package Prisma binaries
+        run: tar -czf prisma-binaries.tar.gz node_modules/.prisma node_modules/@prisma
+
+      - name: Upload build to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: ".next,prisma,package.json,package-lock.json,next.config.mjs,prisma-binaries.tar.gz"
+          target: "~/zunkiree-cms"
+
+      - name: Deploy on server
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -16,24 +52,20 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             set -e
+            export PATH=/opt/cpanel/ea-nodejs22/bin:$PATH
             cd ~/zunkiree-cms
 
-            echo "==> Pulling latest code..."
-            git pull origin main
+            echo "==> Installing production dependencies..."
+            npm ci --omit=dev
 
-            echo "==> Installing dependencies..."
-            npm install
-
-            echo "==> Generating Prisma client..."
-            npx prisma generate
+            echo "==> Restoring pre-built Prisma binaries..."
+            tar -xzf prisma-binaries.tar.gz
+            rm -f prisma-binaries.tar.gz
 
             echo "==> Syncing DB schema..."
             npx prisma db push --skip-generate
 
-            echo "==> Building..."
-            npm run build
-
             echo "==> Restarting app..."
-            pm2 restart zunkiree-cms 2>/dev/null || pm2 start npm --name zunkiree-cms -- start
+            bash ~/zunkiree-cms/start.sh
 
             echo "==> Done."
