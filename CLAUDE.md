@@ -17,8 +17,11 @@ npm run lint         # ESLint (next/core-web-vitals + next/typescript)
 npm run db:push      # Push schema to DB without a migration (dev iteration)
 npm run db:migrate   # Create + apply a dev migration
 npm run db:studio    # Prisma Studio GUI
-npm run db:seed      # Seed admin user (tsx prisma/seed.ts)
+npm run db:seed      # Seed admin user (tsx --env-file=.env prisma/seed.ts)
+npm run db:verify    # Verify the one-off Sanity → Postgres migration
 ```
+
+The `db:seed` and `db:verify` scripts pass `--env-file=.env` explicitly; the rest read the ambient env.
 
 No test framework is configured. There is no single-test command.
 
@@ -66,4 +69,4 @@ Schema in `prisma/schema.prisma`. Content types: `TileCatalog` → `TileProduct`
 
 ## Data migration
 
-`scripts/migrate-from-sanity.ts` is a one-off importer from the legacy Sanity CMS into PostgreSQL (`npx tsx scripts/migrate-from-sanity.ts`). It expects an SSH tunnel to the production DB (see the header comment in the file). Not part of normal development.
+`scripts/migrate-from-sanity.ts` is a one-off importer from the legacy Sanity CMS into PostgreSQL (`npx tsx scripts/migrate-from-sanity.ts`). It expects an SSH tunnel to the production DB (see the header comment in the file). Not part of normal development. `scripts/verify-sanity-migration.ts` (via `npm run db:verify`) sanity-checks the imported row counts.
